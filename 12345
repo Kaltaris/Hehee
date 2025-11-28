@@ -56,8 +56,8 @@ local tabGroups = {
 
 local tabs = {
 	Main = tabGroups.TabGroup1:Tab({ Name = "Thông báo Update", Image = "rbxassetid://81478297548754" }),
-	Esp = tabGroups.TabGroup1:Tab({ Name = "LocalUsing", Image = "rbxassetid://84727577248856" }),
-        EspM = tabGroups.TabGroup1:Tab({ Name = "EspM", Image = "rbxassetid://84727577248856" }),
+	Esp = tabGroups.TabGroup1:Tab({ Name = "MainUsing", Image = "rbxassetid://84727577248856" }),
+		EspM = tabGroups.TabGroup1:Tab({ Name = "EspM", Image = "rbxassetid://84727577248856" }),
 	Aim = tabGroups.TabGroup1:Tab({ Name = "Aimbot", Image = "rbxassetid://130939958971532" }),
 	Uni = tabGroups.TabGroup1:Tab({ Name = "Visual", Image = "rbxassetid://122760395538267" }),
 	Pla = tabGroups.TabGroup1:Tab({ Name = "Player", Image = "rbxassetid://122760395538267" }),
@@ -76,6 +76,8 @@ local sections = {
 	UniSection1 = tabs.Uni:Section({ Side = "Left" }),
 	Uni2Section1 = tabs.Uni:Section({ Side = "Right" }),
 	PlaSection1 = tabs.Pla:Section({ Side = "Left" }),
+	Pla2Section1 = tabs.Pla:Section({ Side = "Right" }),
+	ShaSection1 = tabs.Sha:Section({ Side = "Left" }),
 }
 
 local Players = game:GetService("Players")
@@ -140,6 +142,54 @@ local fontOptions = {
     "TitilliumWeb",
     "Ubuntu"
 }
+
+local function getFontEnum(fontName)
+    return Enum.Font[fontName]
+end
+
+local function isEnemyPlayer(player)
+    if not TeamCheckEnabled then return true end
+    if not game.Players.LocalPlayer.Team then return true end 
+    if not player.Team then return true end
+    return player.Team ~= game.Players.LocalPlayer.Team
+end
+
+local function UpdateCustomName(player)
+    local function updateForCharacter(character)
+        if character then
+            local humanoid = character:WaitForChild("Humanoid")
+            if humanoid then
+                humanoid.DisplayDistanceType = ShowNamesEnabled and Enum.HumanoidDisplayDistanceType.None or Enum.HumanoidDisplayDistanceType.Viewer
+            end
+            
+            local head = character:WaitForChild("Head")
+            if head then
+                local nameGui = head:FindFirstChild("NameGui") or Instance.new("BillboardGui")
+                nameGui.Name = "NameGui"
+                nameGui.AlwaysOnTop = true
+                nameGui.Size = UDim2.new(0, 100, 0, 40)
+                nameGui.StudsOffset = Vector3.new(0, YOffset, 0) -- Đã bỏ dấu trừ để hiển thị trên đầu
+                nameGui.Parent = head
+
+                local nameLabel = nameGui:FindFirstChild("NameLabel") or Instance.new("TextLabel")
+                nameLabel.Name = "NameLabel"
+                nameLabel.Size = UDim2.new(1, 0, 1, 0)
+                nameLabel.BackgroundTransparency = 1
+                nameLabel.TextColor3 = TeamCheckEnabled and player.TeamColor.Color or NameColor
+                nameLabel.TextStrokeTransparency = 0
+                nameLabel.TextSize = NameSize
+                nameLabel.Font = SelectedFont
+                nameLabel.Parent = nameGui
+
+                if ShowNamesEnabled and isEnemyPlayer(player) then
+                    nameGui.Enabled = true
+                    nameLabel.Text = player.Name
+                else
+                    nameGui.Enabled = false
+                end
+            end
+        end
+    end
 
     if player.Character then
         updateForCharacter(player.Character)
@@ -265,13 +315,994 @@ sections.EspSection1:Colorpicker({
     end,
 }, "NameColor")
 
+sections.EspSection1:Dropdown({
+    Name = "Phông chữ",
+    Multi = false,
+    Required = true,
+    Options = fontOptions,
+    Default = "SourceSansBold",
+    Callback = function(fontName)
+        SelectedFont = getFontEnum(fontName)
+        for _, player in pairs(game.Players:GetPlayers()) do
+            if player ~= game.Players.LocalPlayer and player.Character then
+                local head = player.Character:FindFirstChild("Head")
+                if head then
+                    local nameGui = head:FindFirstChild("NameGui")
+                    if nameGui then
+                        local nameLabel = nameGui:FindFirstChild("NameLabel")
+                        if nameLabel then
+                            nameLabel.Font = SelectedFont
+                        end
+                    end
+                end
+            end
+        end
+    end,
+}, "NameFont")
 
 -----------------------------------------
+sections.EspSection1:Header({
+	Name = "ESP Thanh Máu Và %"
+})
+
+local ESP = {
+    Enabled = false,
+    TeamCheck = false,
+    YOffset = -5 -- Thêm YOffset âm để ESP hiển thị phía trên đầu
+}
+local espConnections = {}
+
+sections.EspSection1:Toggle({
+    Name = "Hiện Máu",
+    Default = false,
+    Callback = function(value)
+        ESP.Enabled = value
+        
+        -- Cleanup function để xóa toàn bộ ESP
+        local function cleanupESP()
+            for _, esp in ipairs(espConnections) do
+                if esp.container then esp.container:Remove() end
+                if esp.healthBar then esp.healthBar:Remove() end
+                if esp.glowEffect then esp.glowEffect:Remove() end
+                if esp.healthText then esp.healthText:Remove() end
+                if esp.connection then esp.connection:Disconnect() end
+                
+                -- Set tất cả các đối tượng về nil
+                esp.container = nil
+                esp.healthBar = nil
+                esp.glowEffect = nil
+                esp.healthText = nil
+                esp.connection = nil
+            end
+            table.clear(espConnections)
+        end
+
+        if not value then
+            cleanupESP()
+            return
+        end
+
+        local function CreateESP(player)
+            if player == game.Players.LocalPlayer then return end
+
+            local function IsTeammate()
+                if not ESP.TeamCheck then return false end
+                return player.Team == game.Players.LocalPlayer.Team
+            end
+
+            local container = Drawing.new("Square")
+            container.Thickness = 1
+            container.Filled = true
+            container.Transparency = 0.8
+            container.Color = Color3.fromRGB(25, 25, 25)
+            container.Visible = false
+
+            local healthBar = Drawing.new("Square")
+            healthBar.Thickness = 1
+            healthBar.Filled = true
+            healthBar.Transparency = 1
+            healthBar.Color = Color3.fromRGB(0, 255, 200)
+            healthBar.Visible = false
+
+            local glowEffect = Drawing.new("Square")
+            glowEffect.Thickness = 1
+            glowEffect.Filled = true
+            glowEffect.Transparency = 0.4
+            glowEffect.Color = Color3.fromRGB(0, 255, 200)
+            glowEffect.Visible = false
+
+            local healthText = Drawing.new("Text")
+            healthText.Center = false
+            healthText.Outline = true
+            healthText.Color = Color3.fromRGB(255, 255, 255)
+            healthText.Font = 3
+            healthText.Size = 12
+            healthText.Visible = false
+
+            local previousHealth = 100
+            local isAnimating = false
+            local flashDuration = 0
+            local originalTransparency = healthBar.Transparency
+
+            local function AnimateHealthChange()
+                if isAnimating then return end
+                isAnimating = true
+                flashDuration = 0
+
+                local connection = game:GetService("RunService").RenderStepped:Connect(function(delta)
+                    if not isAnimating or not ESP.Enabled then 
+                        isAnimating = false
+                        connection:Disconnect()
+                        return 
+                    end
+                    
+                    flashDuration = flashDuration + delta
+                    if flashDuration >= 0.5 then
+                        isAnimating = false
+                        healthBar.Transparency = originalTransparency
+                        glowEffect.Transparency = 0.4
+                        healthText.Transparency = 1
+                        connection:Disconnect()
+                        return
+                    end
+
+                    local wave = math.abs(math.sin(flashDuration * 30))
+                    healthBar.Transparency = originalTransparency * (0.5 + 0.5 * wave)
+                    glowEffect.Transparency = 0.4 * (0.5 + 0.5 * wave)
+                    healthText.Transparency = 1 * (0.5 + 0.5 * wave)
+                    
+                    local shake = math.random(-1, 1)
+                    healthBar.Position = healthBar.Position + Vector2.new(shake, shake)
+                    glowEffect.Position = glowEffect.Position + Vector2.new(shake, shake)
+                    healthText.Position = healthText.Position + Vector2.new(shake, shake)
+                end)
+            end
+
+            local function UpdateESP()
+                if not ESP.Enabled then
+                    container.Visible = false
+                    healthBar.Visible = false
+                    glowEffect.Visible = false
+                    healthText.Visible = false
+                    return
+                end
+                
+                if IsTeammate() then
+                    container.Visible = false
+                    healthBar.Visible = false
+                    glowEffect.Visible = false
+                    healthText.Visible = false
+                    return
+                end
+                
+                local character = player.Character
+                if not character or not character:FindFirstChild("Humanoid") or not character:FindFirstChild("HumanoidRootPart") or not character:FindFirstChild("Head") then
+                    container.Visible = false
+                    healthBar.Visible = false
+                    glowEffect.Visible = false
+                    healthText.Visible = false
+                    return
+                end
+
+                local humanoid = character.Humanoid
+                local head = character.Head
+
+                local verticalOffset = 2.5
+                local headPos = head.Position + Vector3.new(0, ESP.YOffset, 0) -- Sử dụng ESP.YOffset
+    local headVec, onScreen = workspace.CurrentCamera:WorldToViewportPoint(headPos)
+                
+                if not onScreen then
+                    container.Visible = false
+                    healthBar.Visible = false
+                    glowEffect.Visible = false
+                    healthText.Visible = false
+                    return
+                end
+
+                local barWidth = 65
+                local barHeight = 6
+                local padding = 2
+                local health = humanoid.Health / humanoid.MaxHealth
+                local healthPercent = math.floor(health * 100)
+
+                if healthPercent < previousHealth then
+                    AnimateHealthChange()
+                end
+                previousHealth = healthPercent
+
+                local containerPos = Vector2.new(headVec.X - barWidth/2, headVec.Y - barHeight/2)
+                
+                container.Size = Vector2.new(barWidth, barHeight)
+                container.Position = containerPos
+                container.Visible = true
+
+                local targetWidth = (barWidth - padding * 2) * health
+                local currentWidth = healthBar.Size.X or 0
+                healthBar.Size = Vector2.new(
+                    currentWidth + (targetWidth - currentWidth) * 0.1,
+                    barHeight - padding * 2
+                )
+                healthBar.Position = Vector2.new(containerPos.X + padding, containerPos.Y + padding)
+                healthBar.Visible = true
+
+                glowEffect.Size = Vector2.new(healthBar.Size.X, 2)
+                glowEffect.Position = Vector2.new(containerPos.X + padding, containerPos.Y)
+                glowEffect.Visible = true
+
+                local textVerticalOffset = 15
+                healthText.Text = healthPercent .. "%"
+                healthText.Position = Vector2.new(
+                    containerPos.X - 2,
+                    containerPos.Y - textVerticalOffset
+                )
+                healthText.Visible = true
+            end
+
+            local renderConnection = game:GetService("RunService").RenderStepped:Connect(function()
+                if not ESP.Enabled then 
+                    container.Visible = false
+                    healthBar.Visible = false
+                    glowEffect.Visible = false
+                    healthText.Visible = false
+                    return 
+                end
+                
+                if player.Parent == game:GetService("Players") then
+                    UpdateESP()
+                else
+                    container:Remove()
+                    healthBar:Remove()
+                    glowEffect:Remove()
+                    healthText:Remove()
+                    renderConnection:Disconnect()
+                end
+            end)
+
+            table.insert(espConnections, {
+                container = container,
+                healthBar = healthBar,
+                glowEffect = glowEffect,
+                healthText = healthText,
+                connection = renderConnection
+            })
+        end
+
+        -- Tạo ESP cho người chơi hiện tại
+        for _, player in pairs(game:GetService("Players"):GetPlayers()) do
+            if player ~= game.Players.LocalPlayer then
+                CreateESP(player)
+            end
+        end
+
+        -- Theo dõi người chơi mới
+        game:GetService("Players").PlayerAdded:Connect(function(player)
+            if player ~= game.Players.LocalPlayer then
+                CreateESP(player)
+            end
+        end)
+    end
+})
+
+
+sections.EspSection1:Toggle({
+    Name = "Team Check", 
+    Default = false,
+    Callback = function(value)
+        ESP.TeamCheck = value
+    end
+})
 --------------------------------------------
+
 -------------------------------------
+sections.EspSection1:Header({
+    Name = "ESP Chams"
+})
+
+_G.ChamsSettings = {
+    Enabled = false,
+    TeamCheck = false,
+    RoleCheck = false,
+    FillTransparency = 0.5,
+    OutlineTransparency = 0,
+    
+    Colors = {
+        Fill = Color3.fromRGB(0, 255, 0),
+        Outline = Color3.fromRGB(255, 255, 255),
+        Roles = {
+            ["Murderer"] = Color3.fromRGB(255, 0, 0),
+            ["Sheriff"] = Color3.fromRGB(0, 0, 255),
+            ["Innocent"] = Color3.fromRGB(0, 255, 0),
+        }
+    },
+    
+    Animation = {
+        Duration = 1,
+        Style = Enum.EasingStyle.Sine,
+        Direction = Enum.EasingDirection.Out
+    }
+}
+
+-- Cache để lưu role của người chơi
+local PlayerRoles = {}
+local GameState = {
+    IsRoundActive = false
+}
+
+local function MonitorGameState()
+    local function checkRoundStatus()
+        local murderer = false
+        local sheriff = false
+        
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player.Character then
+                local hasKnife = player.Character:FindFirstChild("Knife") or (player.Backpack and player.Backpack:FindFirstChild("Knife"))
+                local hasGun = player.Character:FindFirstChild("Gun") or (player.Backpack and player.Backpack:FindFirstChild("Gun"))
+                
+                if hasKnife then murderer = true end
+                if hasGun then sheriff = true end
+            end
+        end
+        
+        if not (murderer and sheriff) then
+            if GameState.IsRoundActive then
+                GameState.IsRoundActive = false
+                -- Reset tất cả role khi round kết thúc
+                table.clear(PlayerRoles)
+            end
+        else
+            GameState.IsRoundActive = true
+        end
+    end
+    
+    RunService.Heartbeat:Connect(function()
+        checkRoundStatus()
+    end)
+end
+
+local function UpdatePlayerRole(Player)
+    if game.PlaceId ~= 142823291 then return end
+    if not GameState.IsRoundActive then return "Innocent" end
+    
+    local function CheckTools()
+        if not Player.Character then return "Innocent" end
+        if not Player.Backpack then return "Innocent" end
+        
+        -- Check trong character
+        for _, tool in pairs(Player.Character:GetChildren()) do
+            if tool:IsA("Tool") then
+                if tool.Name == "Knife" then
+                    return "Murderer"
+                elseif tool.Name == "Gun" then
+                    return "Sheriff"
+                end
+            end
+        end
+        
+        -- Check trong backpack
+        for _, tool in pairs(Player.Backpack:GetChildren()) do
+            if tool:IsA("Tool") then
+                if tool.Name == "Knife" then
+                    return "Murderer"
+                elseif tool.Name == "Gun" then
+                    return "Sheriff"
+                end
+            end
+        end
+        
+        return "Innocent"
+    end
+    
+    PlayerRoles[Player.UserId] = CheckTools()
+    
+    -- Theo dõi thay đổi trong Backpack
+        if not Player.Backpack:FindFirstChild("RoleMonitor") then
+        local monitor = Instance.new("BoolValue")
+        monitor.Name = "RoleMonitor"
+        monitor.Parent = Player.Backpack
+        
+        Player.Backpack.ChildAdded:Connect(function(child)
+            if child:IsA("Tool") and GameState.IsRoundActive then
+                PlayerRoles[Player.UserId] = CheckTools()
+            end
+        end)
+        
+        Player.Backpack.ChildRemoved:Connect(function(child)
+            if child:IsA("Tool") and GameState.IsRoundActive then
+                PlayerRoles[Player.UserId] = CheckTools()
+            end
+        end)
+    end
+    
+    if Player.Character and not Player.Character:FindFirstChild("RoleMonitor") then
+        local monitor = Instance.new("BoolValue")
+        monitor.Name = "RoleMonitor"
+        monitor.Parent = Player.Character
+        
+        Player.Character.ChildAdded:Connect(function(child)
+            if child:IsA("Tool") and GameState.IsRoundActive then
+                PlayerRoles[Player.UserId] = CheckTools()
+            end
+        end)
+        
+        Player.Character.ChildRemoved:Connect(function(child)
+            if child:IsA("Tool") and GameState.IsRoundActive then
+                PlayerRoles[Player.UserId] = CheckTools()
+            end
+        end)
+    end
+end
+
+MonitorGameState()
+
+local function GetPlayerRole(Player)
+    if game.PlaceId ~= 142823291 then return "Unknown" end
+    
+    if not PlayerRoles[Player.UserId] then
+        UpdatePlayerRole(Player)
+    end
+    
+    return PlayerRoles[Player.UserId] or "Innocent"
+end
+
+local function IsTeammate(Player)
+    if not _G.ChamsSettings.TeamCheck then return false end
+    return Player.Team == LocalPlayer.Team
+end
+
+local function ApplyChams(Player)
+    local Connections = {}
+    local CurrentHighlighter
+    
+    -- Khởi tạo role monitoring
+    UpdatePlayerRole(Player)
+    
+    local function Setup(Character)
+        if not Character then return end
+        
+        if CurrentHighlighter then
+            CurrentHighlighter:Destroy()
+        end
+        
+        local Highlighter = Instance.new("Highlight")
+        CurrentHighlighter = Highlighter
+        Highlighter.Parent = Character
+        
+        Highlighter.FillTransparency = 1
+        Highlighter.OutlineTransparency = 1
+        
+        local AnimationInfo = TweenInfo.new(
+            _G.ChamsSettings.Animation.Duration,
+            _G.ChamsSettings.Animation.Style,
+            _G.ChamsSettings.Animation.Direction
+        )
+        
+        local FillTween = TweenService:Create(Highlighter, AnimationInfo, {
+            FillTransparency = _G.ChamsSettings.FillTransparency
+        })
+        
+        local OutlineTween = TweenService:Create(Highlighter, AnimationInfo, {
+            OutlineTransparency = _G.ChamsSettings.OutlineTransparency
+        })
+        
+        FillTween:Play()
+        OutlineTween:Play()
+        
+        local function Update()
+            if not _G.ChamsSettings.Enabled then
+                Highlighter.Enabled = false
+                return
+            end
+            
+            if IsTeammate(Player) then
+                Highlighter.Enabled = false
+                return
+            end
+            
+            Highlighter.Enabled = true
+            
+            if _G.ChamsSettings.RoleCheck then
+                local role = GetPlayerRole(Player)
+                local roleColor = _G.ChamsSettings.Colors.Roles[role]
+                
+                if roleColor then
+                    Highlighter.FillColor = roleColor
+                    Highlighter.OutlineColor = roleColor
+                    print(Player.Name .. " is " .. role) -- Debug
+                else
+                    Highlighter.FillColor = _G.ChamsSettings.Colors.Fill
+                    Highlighter.OutlineColor = _G.ChamsSettings.Colors.Outline
+                end
+            else
+                Highlighter.FillColor = _G.ChamsSettings.Colors.Fill
+                Highlighter.OutlineColor = _G.ChamsSettings.Colors.Outline
+            end
+        end
+        
+        local UpdateConnection = RunService.RenderStepped:Connect(Update)
+        table.insert(Connections, UpdateConnection)
+        
+        -- Monitor character changes
+        Character.ChildAdded:Connect(function(child)
+            if child:IsA("Tool") then
+                UpdatePlayerRole(Player)
+            end
+        end)
+        
+        Character.ChildRemoved:Connect(function(child)
+            if child:IsA("Tool") then
+                UpdatePlayerRole(Player)
+            end
+        end)
+        
+        local Humanoid = Character:FindFirstChild("Humanoid")
+        if Humanoid then
+            table.insert(Connections, Humanoid.Died:Connect(function()
+                local FadeOutTween = TweenService:Create(Highlighter, TweenInfo.new(0.5), {
+                    FillTransparency = 1,
+                    OutlineTransparency = 1
+                })
+                FadeOutTween.Completed:Connect(function()
+                    Highlighter:Destroy()
+                end)
+                FadeOutTween:Play()
+            end))
+        end
+    end
+    
+    if Player.Character then
+        Setup(Player.Character)
+    end
+    
+    local CharacterAddedConnection = Player.CharacterAdded:Connect(function(Character)
+        task.wait()
+        Setup(Character)
+    end)
+    
+    table.insert(Connections, CharacterAddedConnection)
+    
+    local function Cleanup()
+        for _, Connection in pairs(Connections) do
+            Connection:Disconnect()
+        end
+        if CurrentHighlighter then
+            CurrentHighlighter:Destroy()
+        end
+        PlayerRoles[Player.UserId] = nil
+    end
+    
+    table.insert(Connections, Player.AncestryChanged:Connect(function(_, parent)
+        if not parent then
+            Cleanup()
+        end
+    end))
+    
+    return Cleanup
+end
+
+-- UI Controls remain the same as before
+sections.EspSection1:Toggle({
+    Name = "Hiện Chams",
+    Default = false,
+    Callback = function(Value)
+        _G.ChamsSettings.Enabled = Value
+        
+        if Value then
+            for _, Player in pairs(Players:GetPlayers()) do
+                if Player ~= LocalPlayer then
+                    task.spawn(function()
+                        task.wait(math.random() * 0.3)
+                        ApplyChams(Player)
+                    end)
+                end
+            end
+            
+            if not _G.ChamsInitialized then
+                _G.ChamsInitialized = true
+                Players.PlayerAdded:Connect(function(Player)
+                    if Player ~= LocalPlayer then
+                        ApplyChams(Player)
+                    end
+                end)
+            end
+        end
+    end
+})
+
+sections.EspSection1:Toggle({
+    Name = "Role Check",
+    Default = false,
+    Callback = function(Value)
+        _G.ChamsSettings.RoleCheck = Value
+    end
+})
+
+sections.EspSection1:Toggle({
+    Name = "Team Check",
+    Default = false,
+    Callback = function(Value)
+        _G.ChamsSettings.TeamCheck = Value
+    end
+})
+
+sections.EspSection1:Colorpicker({
+    Name = "Màu Chính Chams",
+    Default = Color3.fromRGB(0, 255, 0),
+    Callback = function(color)
+        _G.ChamsSettings.Colors.Fill = color
+    end
+})
+
+sections.EspSection1:Colorpicker({
+    Name = "Màu Viền Chams",
+    Default = Color3.fromRGB(255, 255, 255),
+    Callback = function(color)
+        _G.ChamsSettings.Colors.Outline = color
+    end
+})
+
 ------------------------------------------
 -------------------------------------
 -----------------------------------
+sections.AimSection1:Header({
+    Name = "Aimbot Cơ Bản"
+})
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Camera = workspace.CurrentCamera
+local LocalPlayer = Players.LocalPlayer
+
+local AimbotEnabled = false
+local FOVHidden = false
+local FOVSize = 200
+local AimbotTarget = "Head"
+local AimbotRange = 50
+local FOVColor = Color3.fromRGB(255, 255, 255)
+local TeamCheck = false
+local WallCheck = false
+local LockedPlayer = nil
+local LockEnabled = false
+local AimbotSpeed = 100
+
+-- Tạo FOV Circle
+local fovCircle = Drawing.new("Circle")
+fovCircle.Thickness = 1
+fovCircle.NumSides = 100
+fovCircle.Radius = FOVSize
+fovCircle.Filled = false
+fovCircle.Visible = false
+fovCircle.ZIndex = 999
+fovCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+fovCircle.Color = FOVColor
+
+-- Hàm kiểm tra team
+local function IsTeammate(player)
+    if not TeamCheck then return false end
+    return player.Team == LocalPlayer.Team
+end
+
+-- Hàm kiểm tra tầm nhìn
+local function IsVisible(targetPart)
+    if not WallCheck then return true end
+    
+    local origin = Camera.CFrame.Position
+    local targetPos = targetPart.Position
+    local direction = (targetPos - origin)
+    local distance = direction.Magnitude
+    direction = direction.Unit
+    
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+    rayParams.FilterDescendantsInstances = {LocalPlayer.Character, targetPart.Parent}
+    
+    local result = workspace:Raycast(origin, direction * distance, rayParams)
+    return result == nil
+end
+
+local function IsInFOV(position)
+    local screenPos, onScreen = Camera:WorldToScreenPoint(position)
+    if not onScreen then return false end
+    
+    local screenCenter = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+    local screenPosition = Vector2.new(screenPos.X, screenPos.Y)
+    return (screenCenter - screenPosition).Magnitude <= FOVSize
+end
+
+local function GetClosestPlayerInFOV()
+    local closestPlayer = nil
+    local shortestDistance = math.huge
+    
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and 
+           player.Character and 
+           player.Character:FindFirstChild("HumanoidRootPart") and 
+           player.Character:FindFirstChild("Humanoid") and 
+           player.Character.Humanoid.Health > 0 and
+           not IsTeammate(player) then
+            
+            local targetPart = player.Character:FindFirstChild(AimbotTarget)
+            if targetPart then
+                local distance = (LocalPlayer.Character.HumanoidRootPart.Position - targetPart.Position).Magnitude
+                
+                if distance <= AimbotRange and IsVisible(targetPart) and IsInFOV(targetPart.Position) then
+                    if distance < shortestDistance then
+                        closestPlayer = player
+                        shortestDistance = distance
+                    end
+                end
+            end
+        end
+    end
+    
+    return closestPlayer
+end
+
+local function GetClosestPlayerWhenNoLock()
+    if LockEnabled and LockedPlayer and 
+       LockedPlayer.Character and 
+       LockedPlayer.Character:FindFirstChild("Humanoid") and 
+       LockedPlayer.Character.Humanoid.Health > 0 then
+        return LockedPlayer
+    end
+    
+    return GetClosestPlayerInFOV()
+end
+
+-- Hàm cập nhật
+local function UpdateFOVVisibility()
+    fovCircle.Visible = AimbotEnabled and not FOVHidden
+end
+
+local function UpdateFOVPosition()
+    fovCircle.Position = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+end
+
+local function UpdateFOVColor(color)
+    FOVColor = color
+    fovCircle.Color = color
+end
+
+local function UpdateFOVSize(size)
+    FOVSize = size
+    fovCircle.Radius = size
+end
+
+-- Mobile Aimbot Loop
+RunService:BindToRenderStep("MobileAimbot", 1, function()
+    UpdateFOVPosition()
+    UpdateFOVVisibility()
+    
+    if not AimbotEnabled then return end
+    if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then return end
+    
+    local target
+    if LockEnabled then
+        if LockedPlayer and 
+           LockedPlayer.Character and 
+           LockedPlayer.Character:FindFirstChild("Humanoid") and 
+           LockedPlayer.Character.Humanoid.Health > 0 then
+            target = LockedPlayer
+        else
+            LockedPlayer = GetClosestPlayerInFOV()
+            target = LockedPlayer
+        end
+    else
+        target = GetClosestPlayerInFOV()
+    end
+    
+    if target and target.Character and target.Character:FindFirstChild(AimbotTarget) then
+        local targetPos = target.Character[AimbotTarget].Position
+        local targetCFrame = CFrame.new(Camera.CFrame.Position, targetPos)
+        
+        -- Tính toán độ mượt dựa trên AimbotSpeed
+        local smoothness = math.clamp(1 - (AimbotSpeed / 500), 0, 0.99)
+        Camera.CFrame = Camera.CFrame:Lerp(targetCFrame, 1 - smoothness)
+    end
+end)
+
+-- Events for character
+LocalPlayer.CharacterAdded:Connect(function()
+    UpdateFOVVisibility()
+end)
+
+LocalPlayer.CharacterRemoving:Connect(function()
+    UpdateFOVVisibility()
+end)
+
+-- Viewport size changed
+Camera:GetPropertyChangedSignal("ViewportSize"):Connect(UpdateFOVPosition)
+
+-- Toggle functions
+local function ToggleAimbot()
+    AimbotEnabled = not AimbotEnabled
+    UpdateFOVVisibility()
+end
+
+local function ToggleFOV()
+    FOVHidden = not FOVHidden
+    UpdateFOVVisibility()
+end
+
+-- Toggle Aimbot
+sections.AimSection1:Toggle({
+    Name = "Bật/Tắt Aimbot",
+    Default = false,
+    Callback = function(value)
+        AimbotEnabled = value
+        UpdateFOVVisibility()
+        Window:Notify({
+            Title = "Aimbot đã được " .. (value and "Bật" or "Tắt")
+        })
+    end
+}, "AimbotToggle")
+
+-- Toggle FOV
+sections.AimSection1:Toggle({
+    Name = "Ẩn Vòng Tròn",
+    Default = false,
+    Callback = function(value)
+        FOVHidden = value
+        UpdateFOVVisibility()
+        Window:Notify({
+            Title = "Vòng tròn đã được " .. (value and "Ẩn" or "Hiện")
+        })
+    end
+}, "FOVToggle")
+
+-- Toggle TeamCheck
+sections.AimSection1:Toggle({
+    Name = "Kiểm Tra Đồng Đội",
+    Default = false,
+    Callback = function(value)
+        TeamCheck = value
+        Window:Notify({
+            Title = "Kiểm tra đồng đội đã được " .. (value and "Bật" or "Tắt")
+        })
+    end
+}, "TeamCheckToggle")
+
+sections.AimSection1:Toggle({
+    Name = "Kiểm Tra Vật Cản",
+    Default = false,
+    Callback = function(value)
+        WallCheck = value
+        Window:Notify({
+            Title = "Wall Check đã được " .. (value and "Bật" or "Tắt")
+        })
+    end
+}, "WallCheckToggle")
+
+-- Slider FOV Size
+sections.AimSection1:Slider({
+    Name = "Size Fov",
+    Default = 200,
+    Minimum = 50,
+    Maximum = 500,
+    DisplayMethod = "Value",
+    Precision = 0,
+    Callback = function(Value)
+        UpdateFOVSize(Value)
+        Window:Notify({
+            Title = "Kích thước vòng tròn: " .. Value
+        })
+    end
+}, "FOVSizeSlider")
+
+-- Dropdown Aimbot Target
+sections.Aim2Section1:Dropdown({
+    Name = "Vị Trí Nhắm",
+    Multi = false,
+    Required = true,
+    Options = {"Đầu", "Thân"},
+    Default = 1,
+    Callback = function(Value)
+        AimbotTarget = Value == "Đầu" and "Head" or "HumanoidRootPart"
+        Window:Notify({
+            Title = "Đã chọn nhắm vào: " .. Value
+        })
+    end
+}, "AimbotTargetDropdown")
+
+-- Dropdown Aimbot Range
+sections.Aim2Section1:Dropdown({
+    Name = "Tầm Xa Aimbot",
+    Multi = false,
+    Required = true,
+    Options = {
+        "Mức 1 (50m)",
+        "Mức 2 (100m)",
+        "Mức 3 (150m)",
+        "Mức 4 (300m)",
+        "Mức 5 (1000m)"
+    },
+    Default = 1,
+    Callback = function(Value)
+        local ranges = {
+            ["Mức 1 (50m)"] = 50,
+            ["Mức 2 (100m)"] = 100,
+            ["Mức 3 (150m)"] = 150,
+            ["Mức 4 (300m)"] = 300,
+            ["Mức 5 (1000m)"] = 1000
+        }
+        AimbotRange = ranges[Value]
+        Window:Notify({
+            Title = "Tầm xa aimbot: " .. Value
+        })
+    end
+}, "AimbotRangeDropdown")
+
+-- Thêm vào phần sections.AimSection1
+sections.Aim2Section1:Slider({
+    Name = "Khoảng Cách Aim",
+    Default = 50,
+    Minimum = 0,
+    Maximum = 5000,
+    DisplayMethod = "Value",
+    Precision = 0,
+    Callback = function(Value)
+        AimbotRange = Value -- Cập nhật giá trị AimbotRange
+        print("Aimbot Range set to: " .. Value .. "m")
+    end
+})
+
+sections.Aim2Section1:Toggle({
+    Name = "Khóa Người",
+    Default = false,
+    Callback = function(value)
+        LockEnabled = value
+        if not value then
+            LockedPlayer = nil -- Reset locked player khi tắt lock mode
+        end
+        Window:Notify({
+            Title = "Lock Mode đã được " .. (value and "Bật" or "Tắt")
+        })
+    end
+}, "LockModeToggle")
+
+-- Thêm Button để Reset Lock Target (nếu muốn)
+----sections.AimSection1:Button({
+   --- Name = "Cài Lại Khóa",
+   --- Callback = function()
+        ---LockedPlayer = nil
+        ---Window:Notify({
+            ---Title = "Đã reset locked target"
+       -- })
+    --end
+--})
+
+sections.Aim2Section1:Slider({
+    Name = "Tốc Độ Aimbot",
+    Default = 100,
+    Minimum = 1,
+    Maximum = 500,
+    DisplayMethod = "Value",
+    Precision = 0,
+    Callback = function(Value)
+        AimbotSpeed = Value
+        Window:Notify({
+            Title = "Tốc độ aimbot: " .. Value
+        })
+    end
+}, "AimbotSpeedSlider")
+
+
+-- Colorpicker FOV Color
+sections.Aim2Section1:Colorpicker({
+    Name = "Màu Vòng Tròn",
+    Default = Color3.fromRGB(255, 255, 255),
+    Callback = function(color)
+        UpdateFOVColor(color)
+        Window:Notify({
+            Title = "Đã cập nhật màu vòng tròn"
+        })
+    end,
+}, "FOVColorpicker")
+
+-- Cleanup
+LocalPlayer.CharacterRemoving:Connect(function()
+    gui:Destroy()
+end)
 
 -------------------------------------
 sections.ShaSection1:Header({
@@ -340,7 +1371,7 @@ sections.ShaSection1:Toggle({
     end
 }, "Toggle")
 ------------------------------------------------------
-sections.UniSection1:Header({
+sections.Esp2Section1:Header({
 	Name = "Universal"
 })
 -- Phiên bản bypass anti-cheat cơ bản
@@ -380,7 +1411,7 @@ end
 
 RunService.Heartbeat:Connect(speedBypass)
 
-sections.UniSection1:Toggle({
+sections.Esp2Section1:Toggle({
     Name = "Speed Hack",
     Default = false,
     Callback = function(value)
@@ -392,7 +1423,7 @@ sections.UniSection1:Toggle({
     end
 }, "SpeedToggle")
 
-sections.EspSection1:Slider({
+sections.Esp2Section1:Slider({
     Name = "Tốc Độ Speed",
     Default = 50,
     Minimum = 16,
@@ -436,7 +1467,7 @@ local function setJumpValue(humanoid, value)
     end
 end
 
-sections.UniSection1:Dropdown({
+sections.Esp2Section1:Dropdown({
     Name = "Mode Nhảy",
     Multi = false,
     Required = true,
@@ -454,7 +1485,7 @@ sections.UniSection1:Dropdown({
     end
 }, "JumpModeDropdown")
 
-sections.EspSection1:Toggle({
+sections.Esp2Section1:Toggle({
     Name = "Nhảy Cao",
     Default = false,
     Callback = function(value)
@@ -479,7 +1510,7 @@ sections.EspSection1:Toggle({
     end
 }, "JumpToggle")
 
-sections.EspSection1:Slider({
+sections.Esp2Section1:Slider({
     Name = "Sức Nhảy",
     Default = 50,
     Minimum = 50,
@@ -504,7 +1535,7 @@ player.CharacterAdded:Connect(function(character)
     end
 end)
 -----------------------------
-sections.Uni2Section1:Paragraph({
+sections.Esp2Section1:Paragraph({
 	Header = "Ấn Giữ Nút Nhảy Hoặc Bấm Liên Tục Nút Nhảy",
 	Body = "Có Thể Dùng Kết Hợp Nhảy Cao"
 })
@@ -536,7 +1567,7 @@ UserInputService.JumpRequest:Connect(function()
     end
 end)
 
-sections.Uni2Section1:Toggle({
+sections.Esp2Section1:Toggle({
     Name = "Nhảy Liên Tục",
     Default = false,
     Callback = function(value)
@@ -583,7 +1614,7 @@ end
 RunService.Stepped:Connect(noclipRun)
 
 -- Noclip Toggle
-sections.Uni2Section1:Toggle({
+sections.Esp2Section1:Toggle({
     Name = "Xuyên Tường",
     Default = false,
     Callback = function(value)
@@ -1767,7 +2798,139 @@ sections.Pla2Section1:Toggle({
     end
 })
 ----------------------
+local recordedActions = {}
+local isRecording = false
+local isReplaying = false
+local recordingConnection = nil
+local replayConnection = nil
 
+-- Toggle để ghi lại hành động
+sections.Pla2Section1:Toggle({
+    Name = "Ghi Hành Động",
+    Default = false,
+    Callback = function(value)
+        local character = game.Players.LocalPlayer.Character
+        local humanoid = character and character:FindFirstChild("Humanoid")
+        local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+        
+        if not character or not humanoid or not rootPart then
+            Window:Notify({
+                Title = "Error",
+                Content = "Character not found!",
+                Duration = 3
+            })
+            return
+        end
+
+        if value then -- Bắt đầu ghi
+            recordedActions = {}
+            isRecording = true
+
+            if recordingConnection then
+                recordingConnection:Disconnect()
+            end
+
+            recordingConnection = game:GetService("RunService").Heartbeat:Connect(function()
+                if isRecording then
+                    table.insert(recordedActions, {
+                        position = rootPart.CFrame,
+                        jumping = humanoid.Jump,
+                        moveDirection = humanoid.MoveDirection
+                    })
+                end
+            end)
+
+            Window:Notify({
+                Title = "Recording",
+                Content = "Started recording movements",
+                Duration = 3
+            })
+        else -- Kết thúc ghi và lưu lại
+            isRecording = false
+            if recordingConnection then
+                recordingConnection:Disconnect()
+            end
+
+            Window:Notify({
+                Title = "Saved",
+                Content = "Recording saved!",
+                Duration = 3
+            })
+        end
+    end
+})
+
+-- Toggle để phát lại hành động đã ghi
+sections.Pla2Section1:Toggle({
+    Name = "Phát Lại",
+    Default = false,
+    Callback = function(value)
+        local character = game.Players.LocalPlayer.Character
+        local humanoid = character and character:FindFirstChild("Humanoid")
+        local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+        
+        if not character or not humanoid or not rootPart then
+            Window:Notify({
+                Title = "Error",
+                Content = "Character not found!",
+                Duration = 3
+            })
+            return
+        end
+
+        if value then -- Bắt đầu phát lại
+            if #recordedActions == 0 then
+                Window:Notify({
+                    Title = "Error",
+                    Content = "No recorded movements found!",
+                    Duration = 3
+                })
+                return
+            end
+
+            isReplaying = true
+            local actionIndex = 1
+
+            if replayConnection then
+                replayConnection:Disconnect()
+            end
+
+            replayConnection = game:GetService("RunService").RenderStepped:Connect(function()
+                if not isReplaying then
+                    replayConnection:Disconnect()
+                    return
+                end
+
+                if actionIndex > #recordedActions then
+                    actionIndex = 1 -- Lặp lại từ đầu
+                end
+
+                local action = recordedActions[actionIndex]
+                rootPart.CFrame = action.position
+                humanoid.Jump = action.jumping
+                humanoid:Move(action.moveDirection)
+                actionIndex = actionIndex + 1
+            end)
+
+            Window:Notify({
+                Title = "Replaying",
+                Content = "Replaying recorded movements",
+                Duration = 3
+            })
+        else -- Dừng phát lại
+            isReplaying = false
+            if replayConnection then
+                replayConnection:Disconnect()
+            end
+
+            Window:Notify({
+                Title = "Stopped",
+                Content = "Stopped replaying movements",
+                Duration = 3
+            })
+        end
+    end
+})
 -------------------
 local UserInputService = game:GetService("UserInputService")
 local Players = game:GetService("Players")
@@ -1826,6 +2989,217 @@ sections.Pla2Section1:Toggle({
     end
 })
 ---------------------------------------
+sections.EspMSection1:Paragraph({
+	Header = "Chức Năng Này Hiện Chưa Ổn Định",
+	Body = "Sẽ Esp Chams Lên Tất Cả Item Và Model"
+})
+
+sections.EspMSection1:Toggle({
+    Name = "ESPM Chams",
+    Default = false,
+    Callback = function(value)
+        if value then
+            local RunService = game:GetService("RunService")
+            local Players = game:GetService("Players")
+            local LocalPlayer = Players.LocalPlayer
+            
+            if not getgenv().espHighlights then
+                getgenv().espHighlights = {}
+            end
+            
+            if not getgenv().trackedObjects then
+                getgenv().trackedObjects = {}
+            end
+
+            local function hasClickDetector(object)
+                if object:IsA("BasePart") and object:FindFirstChildOfClass("ClickDetector") then
+                    return true
+                elseif object:IsA("Model") then
+                    for _, part in ipairs(object:GetDescendants()) do
+                        if part:FindFirstChildOfClass("ClickDetector") then
+                            return true
+                        end
+                    end
+                end
+                return false
+            end
+
+            local function createHighlight(object, color)
+                if object:FindFirstChild("Highlight") then return end
+                
+                local highlight = Instance.new("Highlight")
+                highlight.FillColor = color or Color3.fromRGB(255, 0, 0)
+                highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+                highlight.FillTransparency = 0.5
+                highlight.OutlineTransparency = 0
+                highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                highlight.Parent = object
+                
+                table.insert(getgenv().espHighlights, highlight)
+                return highlight
+            end
+
+            local function updateHighlight(object)
+                if not object or not object.Parent then return end
+                
+                local highlight = object:FindFirstChild("Highlight")
+                if not highlight then return end
+                
+                -- Cập nhật màu sắc dựa trên loại đối tượng
+                if object:IsA("Model") and object:FindFirstChild("Humanoid") then
+                    highlight.FillColor = Color3.fromRGB(255, 0, 0) -- Màu đỏ cho NPC
+                else
+                    highlight.FillColor = Color3.fromRGB(0, 0, 255) -- Màu xanh cho items
+                end
+            end
+
+            local function handleESP(object)
+                -- Xử lý objects có ClickDetector
+                if hasClickDetector(object) then
+                    if not getgenv().trackedObjects[object] then
+                        local pos = object:IsA("Model") and 
+                            (object:GetPrimaryPartCFrame() and object:GetPrimaryPartCFrame().Position or object:GetModelCFrame().Position) or 
+                            object.Position
+                        getgenv().trackedObjects[object] = {
+                            isItem = true,
+                            lastPosition = pos
+                        }
+                    end
+                    createHighlight(object, Color3.fromRGB(0, 0, 255))
+                end
+                
+                -- Xử lý models có Humanoid (NPC)
+                if object:IsA("Model") and object:FindFirstChild("Humanoid") then
+                    local isPlayer = false
+                    for _, player in ipairs(Players:GetPlayers()) do
+                        if player.Character == object then
+                            isPlayer = true
+                            break
+                        end
+                    end
+                    
+                    if not isPlayer then
+                        if not getgenv().trackedObjects[object] then
+                            getgenv().trackedObjects[object] = {
+                                isNPC = true,
+                                lastPosition = object:GetPrimaryPartCFrame().Position
+                            }
+                        end
+                        createHighlight(object, Color3.fromRGB(255, 0, 0))
+                        
+                        -- Theo dõi di chuyển của NPC
+                        if not object:GetAttribute("ESP_Tracking") then
+                            object:SetAttribute("ESP_Tracking", true)
+                            local humanoid = object:FindFirstChild("Humanoid")
+                            if humanoid then
+                                humanoid.Running:Connect(function()
+                                    if getgenv().trackedObjects[object] then
+                                        updateHighlight(object)
+                                    end
+                                end)
+                            end
+                        end
+                    end
+                end
+            end
+
+            local function cleanupObject(object)
+                if getgenv().trackedObjects[object] then
+                    getgenv().trackedObjects[object] = nil
+                end
+                if object:FindFirstChild("Highlight") then
+                    local highlight = object.Highlight
+                    for i, stored_highlight in ipairs(getgenv().espHighlights) do
+                        if stored_highlight == highlight then
+                            table.remove(getgenv().espHighlights, i)
+                            break
+                        end
+                    end
+                    highlight:Destroy()
+                end
+            end
+
+            -- Khởi tạo ESP cho objects hiện có
+            for _, object in ipairs(workspace:GetDescendants()) do
+                handleESP(object)
+            end
+
+            local descendantAddedConnection = workspace.DescendantAdded:Connect(function(object)
+                task.wait()
+                handleESP(object)
+            end)
+
+            local descendantRemovingConnection = workspace.DescendantRemoving:Connect(cleanupObject)
+
+            local heartbeatConnection = RunService.Heartbeat:Connect(function()
+                for object, data in pairs(getgenv().trackedObjects) do
+                    if object and object.Parent then
+                        local currentPos
+                        if object:IsA("Model") and object:FindFirstChild("HumanoidRootPart") then
+                            currentPos = object.HumanoidRootPart.Position
+                        else
+                            currentPos = object:IsA("Model") and 
+                                (object:GetPrimaryPartCFrame() and object:GetPrimaryPartCFrame().Position or object:GetModelCFrame().Position) or 
+                                object.Position
+                        end
+                        
+                        -- Cập nhật vị trí cuối cùng
+                        if data.lastPosition then
+                            local distance = (currentPos - data.lastPosition).Magnitude
+                            if distance > 0.1 then
+                                -- Object đang di chuyển
+                                updateHighlight(object)
+                            end
+                        end
+                        data.lastPosition = currentPos
+                    else
+                        getgenv().trackedObjects[object] = nil
+                    end
+                end
+            end)
+
+            getgenv().ESPConnections = {
+                descendantAdded = descendantAddedConnection,
+                descendantRemoving = descendantRemovingConnection,
+                heartbeat = heartbeatConnection
+            }
+
+        else
+            -- Cleanup khi tắt ESP
+            if getgenv().ESPConnections then
+                for _, connection in pairs(getgenv().ESPConnections) do
+                    if connection then
+                        connection:Disconnect()
+                    end
+                end
+            end
+
+            if getgenv().espHighlights then
+                for _, highlight in ipairs(getgenv().espHighlights) do
+                    if highlight and highlight.Parent then
+                        highlight:Destroy()
+                    end
+                end
+                table.clear(getgenv().espHighlights)
+            end
+
+            if getgenv().trackedObjects then
+                for object, _ in pairs(getgenv().trackedObjects) do
+                    if object then
+                        object:SetAttribute("ESP_Tracking", nil)
+                    end
+                end
+                table.clear(getgenv().trackedObjects)
+            end
+        end
+
+        Window:Notify({
+            Title = Window.Settings.Title,
+            Content = value and "ESP Enabled" or "ESP Disabled",
+            Duration = 3
+        })
+    end,
+}, "Toggle")
 ----------------------
 local ESP = {
     Enabled = false,
@@ -2333,7 +3707,35 @@ end)
 
 
 
-------------- thông-----------
+------------- thông------------
+sections.MainSection1:Divider()
+
+sections.Main2Section1:Header({
+	Text = "•1Ngày - 3.000 •3Ngày - 9.000 •7Ngày - 18.000 •1Tháng - 69.000!"
+})
+
+sections.MainSection1:Header({
+	Text = "Lưu ý Nút Ẩn UI Sẽ Lưu Vị Trí Nên Bạn Hãy Nó Đến Một Nên Thích Hợp Nhé!"
+})
+
+sections.MainSection1:Paragraph({
+	Header = "Cập Nhật Chính",
+	Body = "Update Sửa Lỗi Và Thêm ▷Aimbot ▷Đồ Họa ▷Universal"
+})
+
+sections.Main2Section1:Paragraph({
+	Header = "Cập Nhật Phụ",
+	Body = "✔Update• +Visual 【•SpeedHack •Nhảy Cao •Nhảy liên tục •Xuyên tường •Lơ lửng trên không •Trọng lực •Chống Afk •Phạm vi quan sát •Click dịch chuyển •Mở giới hạn camera •Camera xuyên •Nhìn xuyên】 ✔Update 【+Player •Free +7 Animation •Spin •Bay lơ lửng】"
+})
+
+sections.MainSection1:Label({
+	Text = "VIP Ver•1.2"
+})
+
+sections.MainSection1:SubLabel({
+	Text = "Ui Mac share và được thêm những chức năng tự code độc quyền."
+})
+
 MacLib:SetFolder("Maclib")
 tabs.Settings:InsertConfigSection("Left")
 
